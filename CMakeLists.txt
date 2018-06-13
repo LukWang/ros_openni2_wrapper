@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 2.8.3)
 project(camera_wrapper)
 
-set(CMAKE_BUILD_TYPE Release)
+set(CMAKE_BUILD_TYPE Debug)
 ## Compile as C++11, supported in ROS Kinetic and newer
 add_compile_options(-std=c++11)
 LIST(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
@@ -18,6 +18,7 @@ find_package(catkin REQUIRED COMPONENTS
   std_msgs
   tf
   openpose_ros_msgs
+  inertial_poser
 )
 find_package(OpenCL REQUIRED)
 find_package(OpenCV 3 REQUIRED)
@@ -53,6 +54,7 @@ if(DEPTH_REG_OPENCL)
 	add_definitions(-DREG_OPENCL_FILE="${PROJECT_SOURCE_DIR}/src/depth_registration.cl")
 	set(MODULES ${MODULES} src/depth_registration.cpp)
     set(MODULE_LIBS ${MODULE_LIBS} ${OPENCL_LIBRARIES})
+    message(${OPENCL_LIBRARIES})
     #set(MODULE_LIBS ${MODULE_LIBS} "/usr/local/cuda-8.0/lib64/libOpenCL.so" )
     #set(MODULE_LIBS ${MODULE_LIBS} "/usr/lib/x86_64-linux-gnu/libOpenCL.so" )
 endif()
@@ -224,3 +226,11 @@ target_link_libraries(image_listener ${catkin_LIBRARIES}
 				     ${OpenCV_LIBS})
 target_link_libraries(cpm_listener ${catkin_LIBRARIES}
 				   ${OpenCV_LIBS})
+
+add_executable(dual_kinect_listener src/dual_kinect.cpp)
+target_link_libraries(dual_kinect_listener ${catkin_LIBRARIES}
+					   ${OpenCV_LIBS})
+
+add_executable(display_scene src/display_scene.cpp)
+target_link_libraries(display_scene ${catkin_LIBRARIES}
+					   ${OpenCV_LIBS})

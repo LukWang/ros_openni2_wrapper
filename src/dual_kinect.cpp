@@ -20,6 +20,10 @@
 #include <openpose_ros_msgs/OpenPoseHumanList.h>
 #include <openpose_ros_msgs/PointWithProb.h>
 
+#include <inertial_poser/ROI_Package.h>
+#include <inertial_poser/UpperBodyKeyPoints.h>
+#include <inertial_poser/KeyPoint.h>
+
 #include <geometry_msgs/PoseArray.h>
 using namespace cv;
 using namespace std;
@@ -81,18 +85,27 @@ void visualize_depth(Mat& depth_image, Mat& depth_viz)
 class ImageProcessor
 {
   public:
-    ImageProcessor(string sensor, bool isCalibrationMode):it(nh), sizeColor(960, 540), left_key_points_center(480,260), right_key_points_center(480,260), left_ROI(240), right_ROI(240){
-      color_mat = Mat(sizeColor, CV_8UC3);
+    ImageProcessor(bool rect, bool isCalibrationMode):it(nh), sizeColor(960, 540) //left_key_points_center(480,260) ,right_key_points_center(480,260), left_ROI(240), right_ROI(240)
+    {
+      prime_color_mat = Mat(sizeColor, CV_8UC3);
+      sub_color_mat = Mat(sizeColor, CV_8UC3);
       depth_mat = Mat(sizeColor, CV_16UC1);
 
-      string color_topic = "/" + sensor + "/qhd/image_color";
-      string depth_topic = "/" + sensor + "/qhd/image_depth_rect";
-      sub = it.subscribe(color_topic.c_str(), 1,&ImageProcessor::imageCallback,this);
-      sub2 = it.subscribe(depth_topic.c_str(),1,&ImageProcessor::depthimageCallback,this);
+      string prime_color_topic = "/kinect2_1/qhd/image_color";
+      string sub_color_topic = "/kinect2_2/qhd/image_color";
+      if(rect){
+        prime_color_topic = prime_color_topic + "_rect";
+        sub_color_topic = sub_color_topic + "_rect";
+      }
+      prime_color_sub = it.subscribe(prime_color_topic.c_str(), 1,&ImageProcessor::prime_imageCallback,this);
+      sub_color_sub = it.subscribe(sub_color_topic.c_str(), 1,&ImageProcessor::sub_imageCallback,this);
+      //depth_sub = it.subscribe("/kinect2_1/qhd/image_depth_rect",1,&ImageProcessor::depthimageCallback,this);
 
       spliced_image_pub = it.advertise("spliced", 1);
 
-      human_joint_sub = nh.subscribe("inertial_poser/pose2d",1,&ImageProcessor::human_joint_callback,this);
+      keypoints_pub = nh.advertise<inertial_poser::ROI_Package>("/inertial_poser/roi_package", 5);
+
+      //human_joint_sub = nh.subscribe("inertial_poser/pose2d",1,&ImageProcessor::human_joint_callback,this);
 
       human_keypoints_sub = nh.subscribe("/openpose_ros/human_list", 1, &ImageProcessor::human_keypoints_callback, this);
 
@@ -131,23 +144,27 @@ class ImageProcessor
         string pose_solution_path = "/home/agent/luk_ws/robot_pose/solution_wjx";
         loadRobotPoseFile(pose_solution_path);
       }
+
+      pthread_mutex_init (&mutex, NULL);
     }
     bool getImage(Mat&);
 
-    void imageCallback(const sensor_msgs::ImageConstPtr& msg);
+    void prime_imageCallback(const sensor_msgs::ImageConstPtr& msg);
+    void sub_imageCallback(const sensor_msgs::ImageConstPtr& msg);
     void depthimageCallback(const sensor_msgs::ImageConstPtr& msgdepth);
-    void loadCalibrationFiles();
+    void loadCalibrationFiles(string& calib_path, cv::Mat& cameraMatrix, cv::Mat& distortion, double scale);
+    void initCalibration();
     void sendMarkerTF(vector<Vec3d>& marker_trans, vector<Vec3d>& marker_rot, vector<int>& ids);
-    void sendCameraTF(vector<Vec3d>& marker_trans, vector<Vec3d>& marker_rot, vector<int>& ids);
+    void sendCameraTF(vector<Vec3d>& marker_trans, vector<Vec3d>& marker_rot, vector<int>& ids, bool prime);
     void sendMarkerTf(vector<Point3f>& marker_position, vector<int>& ids);
-    void getWorldCoordinate(Point2f& image_cord, Point3f& cord);
-    void calculateRobotPose(vector<Point>& joint_image_cords, vector<Point3f>& joint_3d_cords);
-    void getImageCoordinate(Point3f& world_cord, Point& image_cord);
+    void getWorldCoordinate(Point2f& image_cord, Point3f& cord, cv::Mat&);
+    void calculateRobotPose(vector<Point>& joint_image_cords, vector<Point3f>& joint_3d_cords, bool prime);
+    void getImageCoordinate(Point3f& world_cord, Point& image_cord, cv::Mat&);
     void drawRobotJoints(Mat& image, vector<Point>& joint_image_cords);
     void linkToRobotTf();
 
     void human_joint_callback(const geometry_msgs::PoseArray& poses);
-    void calculateHumanPose(vector<Point>& joint_image_cords, vector<Point3f>& joint_3d_cords);
+    void calculateHumanPose(vector<Point>& joint_image_cords, vector<Point3f>& joint_3d_cords, bool);
     void draw_human_pose(Mat& image, vector<Point>& human_joints);
     //void getFivemarkerWorldCoordinate(vector<vector<Point2f>>& corners, vector<int>& ids, vector<Point2f>& marker_center, vector<Point3f>& world_cord);
     bool removeRobotImage(Mat& image,vector<Point>& robot_image_pos, vector<Point3f>& robot_image_3d_pos, Mat& );
@@ -162,21 +179,26 @@ class ImageProcessor
     void startSplicedThread();
     void stopSplicedThread();
 
+    void displayImg();
+
     void human_keypoints_callback(openpose_ros_msgs::OpenPoseHumanList keypoints);
     void drawKeyPoints(Mat& image, vector<KeyPoints>& points);
   private:
     ros::NodeHandle nh;
     image_transport::ImageTransport it;
-    image_transport::Subscriber sub;
-    image_transport::Subscriber sub2;
+    image_transport::Subscriber prime_color_sub;
+    image_transport::Subscriber depth_sub;
+    image_transport::Subscriber sub_color_sub;
     image_transport::Subscriber subTF;
     image_transport::Publisher spliced_image_pub;
 
     ros::Subscriber human_joint_sub;
     ros::Subscriber human_keypoints_sub;
-    cv::Mat distortion_color;
-    cv::Mat cameraMatrix_color_clipped;
-    cv::Mat camera_matrix;
+    ros::Publisher keypoints_pub;
+    cv::Mat distortion_prime;
+    cv::Mat cameraMatrix_prime;
+    cv::Mat distortion_sub;
+    cv::Mat cameraMatrix_sub;
     Point2f averagecorners;
 
     //vector<Point> robot_image_pos;
@@ -186,10 +208,12 @@ class ImageProcessor
     Vec3d marker_0_rvecs_sum;
     int marker_0_sum_count;
 
-    cv::Mat color_mat;
-    cv::Mat color_mat_copy;
+    //cv::Mat color_mat;
+    cv::Mat prime_color_mat;
     cv::Mat depth_mat;
-    cv::Mat depth_debug;
+    cv::Mat sub_color_mat;
+    cv::Mat displyMat_prime;
+    cv::Mat displyMat_sub;
 
 
     tf::TransformListener robot_pose_listener;
@@ -199,7 +223,6 @@ class ImageProcessor
     vector<std::string> joint_names;
     vector<std::string> human_joint_names;
     Size sizeColor;
-    float fx, fy, cx, cy;
     bool calibrationMode;
     bool firstDepth;
 
@@ -209,6 +232,7 @@ class ImageProcessor
     void loadRobotPoseFile(string);
 
     pthread_t id1, id2;
+    pthread_mutex_t mutex;
     vector<KeyPoints> left_key_points;
     Point left_key_points_center;
 
@@ -231,28 +255,29 @@ void ImageProcessor::human_keypoints_callback(openpose_ros_msgs::OpenPoseHumanLi
         auto body_keypoints = keypoints.human_list[person].body_key_points_with_prob;
         int count = 0;
         double prob_sum = 0.0;
-        double x_sum = 0.0;
+        double y_sum = 0.0;
         for(int i = 0; i < body_keypoints.size(); i++)
         {
           if(body_keypoints[i].prob > 0.0)
           {
-            x_sum +=body_keypoints[i].x;
+            y_sum +=body_keypoints[i].y;
             prob_sum += body_keypoints[i].prob;
             count ++;
           }
         }
-        double x_mean = x_sum/count;
-        if(x_mean < 480.0){
+        double y_mean = y_sum/count;
+        if(y_mean < 540.0){
             left_probs.push_back(prob_sum/count);
             left_ids.push_back(person);
         }
-        else if(x_mean > 480.0 && x_mean < 960.0){
+        else if(y_mean > 540.0 && y_mean < 1080.0){
             right_probs.push_back(prob_sum/count);
             right_ids.push_back(person);
         }
       }
 
       //for left screen
+      inertial_poser::UpperBodyKeyPoints keypoints_prime;
       if(left_ids.size() > 0){
         auto maxProb = std::max_element(left_probs.begin(), left_probs.end());
         if(*maxProb > 0.5)
@@ -269,9 +294,9 @@ void ImageProcessor::human_keypoints_callback(openpose_ros_msgs::OpenPoseHumanLi
 
           //hips
           if(body_keypoints[8].prob > 0.0 && body_keypoints[11].prob > 0.0){
-            keypoint_element.x = (body_keypoints[8].x + body_keypoints[11].x) / 2;
-            keypoint_element.y = (body_keypoints[8].y + body_keypoints[11].y) / 2;
-            keypoint_element.p = (body_keypoints[8].prob + body_keypoints[11].prob) / 2;
+            keypoint_element.x = (body_keypoints[8].x + body_keypoints[11].x)/2;
+            keypoint_element.y = (body_keypoints[8].y + body_keypoints[11].y)/2;
+            keypoint_element.p = (body_keypoints[8].prob + body_keypoints[11].prob)/2;
             left_key_points.push_back(keypoint_element);
           }
           else{
@@ -295,28 +320,23 @@ void ImageProcessor::human_keypoints_callback(openpose_ros_msgs::OpenPoseHumanLi
               left_key_points.push_back(keypoint_element);
             }
           }
-          double ave_x = 0;
-          double ave_y = 0;
-          double ave_p = 0.0;
+
+          ROS_INFO("left keypoints available");
+          //ROS_INFO("New left Key Points Center : [%d, %d]", left_key_points_center.x, left_key_points_center.y);
           for(int i = 0; i < left_key_points.size(); ++i)
           {
-            ave_x += left_key_points[i].x * left_key_points[i].p;
-            ave_y += left_key_points[i].y * left_key_points[i].p;
-            ave_p += left_key_points[i].p;
+            keypoints_prime.points[i].x = left_key_points[i].x;
+            keypoints_prime.points[i].y = left_key_points[i].y;
+            keypoints_prime.points[i].prob = left_key_points[i].p;
           }
-          if(ave_p > 0.0){
-            left_key_points_center.x = (int)(ave_x/ave_p) + left_ROI;
-            left_key_points_center.y = (int)(ave_y/ave_p);
-          }
-          //keypoints_available = true;
-          ROS_INFO("left keypoints available");
-          ROS_INFO("New left Key Points Center : [%d, %d]", left_key_points_center.x, left_key_points_center.y);
+
         }
-      }
+
 
 
 
         //for right screen
+        inertial_poser::UpperBodyKeyPoints keypoints_sec;
         if(right_ids.size() > 0){
           auto maxProb = std::max_element(right_probs.begin(), right_probs.end());
           if(*maxProb > 0.5)
@@ -334,8 +354,8 @@ void ImageProcessor::human_keypoints_callback(openpose_ros_msgs::OpenPoseHumanLi
             //hips
             if(body_keypoints[8].prob > 0.0 && body_keypoints[11].prob > 0.0){
               keypoint_element.x = (body_keypoints[8].x + body_keypoints[11].x) / 2;
-              keypoint_element.y = (body_keypoints[8].y + body_keypoints[11].y) / 2;
-              keypoint_element.p = (body_keypoints[8].prob + body_keypoints[11].prob) / 2;
+              keypoint_element.y = (body_keypoints[8].y + body_keypoints[11].y - 1080)/2;
+              keypoint_element.p = (body_keypoints[8].prob + body_keypoints[11].prob)/2;
               right_key_points.push_back(keypoint_element);
             }
             else{
@@ -348,7 +368,7 @@ void ImageProcessor::human_keypoints_callback(openpose_ros_msgs::OpenPoseHumanLi
 
               if(body_keypoints[i].prob > 0.0){
                 keypoint_element.x = body_keypoints[i].x;
-                keypoint_element.y = body_keypoints[i].y;
+                keypoint_element.y = (body_keypoints[i].y - 540) ;
                 keypoint_element.p = body_keypoints[i].prob;
                 right_key_points.push_back(keypoint_element);
               }
@@ -359,25 +379,23 @@ void ImageProcessor::human_keypoints_callback(openpose_ros_msgs::OpenPoseHumanLi
                 right_key_points.push_back(keypoint_element);
               }
             }
-            double ave_x = 0;
-            double ave_y = 0;
-            double ave_p = 0.0;
+
+            ROS_INFO("Right keypoints available");
+            //ROS_INFO("New Right Key Points Center ");
             for(int i = 0; i < right_key_points.size(); ++i)
             {
-              ave_x += right_key_points[i].x * right_key_points[i].p;
-              ave_y += right_key_points[i].y * right_key_points[i].p;
-              ave_p += right_key_points[i].p;
+              keypoints_sec.points[i].x = (double)right_key_points[i].x;
+              keypoints_sec.points[i].y = (double)right_key_points[i].y;
+              keypoints_sec.points[i].prob = right_key_points[i].p;
             }
-            if(ave_p > 0.0){
-              right_key_points_center.x = (int)(ave_x/ave_p) - 480 + right_ROI;
-              right_key_points_center.y = (int)(ave_y/ave_p);
-            }
-            //keypoints_available = true;
-            ROS_INFO("Right keypoints available");
-            ROS_INFO("New Right Key Points Center : [%d, %d]", right_key_points_center.x, right_key_points_center.y);
           }
         }
-
+        inertial_poser::ROI_Package roi_pack;
+        roi_pack.packages.push_back(keypoints_prime);
+        roi_pack.packages.push_back(keypoints_sec);
+        roi_pack.header.stamp = ros::Time::now();
+        keypoints_pub.publish(roi_pack);
+      }
       else{
         ROS_INFO(" Keypoints received, detected person abandoned");
       }
@@ -385,6 +403,13 @@ void ImageProcessor::human_keypoints_callback(openpose_ros_msgs::OpenPoseHumanLi
   else{
     ROS_INFO(" Keypoints received, no person detected");
   }
+}
+
+void ImageProcessor::initCalibration(){
+    string calib_path_prime = "/home/agent/catkin_ws/src/iai_kinect2/kinect2_bridge/data/003415165047";
+    string calib_path_sub = "/home/agent/catkin_ws/src/iai_kinect2/kinect2_bridge/data/092465240847";
+    loadCalibrationFiles(calib_path_prime, cameraMatrix_prime, distortion_prime, 0.5);
+    loadCalibrationFiles(calib_path_sub, cameraMatrix_sub, distortion_sub, 0.5);
 }
 
 void ImageProcessor::drawKeyPoints(Mat& image, vector<KeyPoints>& points)
@@ -396,7 +421,7 @@ void ImageProcessor::drawKeyPoints(Mat& image, vector<KeyPoints>& points)
       if(points[i].p > 0){
         stringstream ss;
         string prob_str;
-        circle(image, cv::Point((int)points[i].x, (int)points[i].y), 3, Scalar(255, 0, 0), -1, 8);
+        circle(image, cv::Point((int)points[i].x * 2, (int)points[i].y * 2), 3, Scalar(255, 0, 0), -1, 8);
         //cout << points[i].p;
         ss << points[i].p;
         ss >> prob_str;
@@ -416,12 +441,16 @@ void ImageProcessor::human_joint_callback(const geometry_msgs::PoseArray& poses)
     human_joint_pos.push_back(joint_pos);
   }
 }
-void ImageProcessor::calculateHumanPose(vector<Point>& joint_image_cords, vector<Point3f>& joint_3d_cords)
+void ImageProcessor::calculateHumanPose(vector<Point>& joint_image_cords, vector<Point3f>& joint_3d_cords, bool prime)
 {
   //tf::TransformListener robot_pose_listener;
     string human_reference_frame;
 
     human_reference_frame = "camera_base";
+    if(prime)
+    {
+      human_reference_frame = "prime_" + human_reference_frame;
+    }
 
 
 
@@ -442,7 +471,12 @@ void ImageProcessor::calculateHumanPose(vector<Point>& joint_image_cords, vector
     isCamHumanTransformAvailable = true;
     Point3f hip_location(cam_hip_transform.getOrigin().x(), cam_hip_transform.getOrigin().y(), cam_hip_transform.getOrigin().z());
     Point hip_image_cord;
-    getImageCoordinate(hip_location, hip_image_cord);
+    if(prime){
+      getImageCoordinate(hip_location, hip_image_cord, cameraMatrix_prime);
+    }
+    else{
+      getImageCoordinate(hip_location, hip_image_cord, cameraMatrix_sub);
+    }
     //circle(color_mat, hip_image_cord, 2, Scalar(0, 0, 255), -1, 8);
     /***
     ostringstream cord_text;
@@ -468,7 +502,12 @@ void ImageProcessor::calculateHumanPose(vector<Point>& joint_image_cords, vector
         Point3f location(joint_transforms.getOrigin().x(), joint_transforms.getOrigin().y(), joint_transforms.getOrigin().z());
         joint_3d_cords.push_back(location);
         Point joint_image_cord;
-        getImageCoordinate(location, joint_image_cord);
+        if(prime){
+          getImageCoordinate(location, joint_image_cord, cameraMatrix_prime);
+        }
+        else{
+          getImageCoordinate(location, joint_image_cord, cameraMatrix_sub);
+        }
         joint_image_cords.push_back(joint_image_cord);
 
     }
@@ -482,9 +521,9 @@ void ImageProcessor::draw_human_pose(Mat& image, vector<Point>& human_joints)
   {
       circle(image, human_joints[i], 3, Scalar(0, 0, 255), -1, 8);
       if (i != 10)
-        line(image,human_joints[i-1],human_joints[i], Scalar(0, 0, 255), 2);
+        line(image,human_joints[i-1], human_joints[i], Scalar(0, 0, 255), 2);
       else
-        line(image,human_joints[5],human_joints[i], Scalar(0, 0, 255), 2);
+        line(image,human_joints[5], human_joints[i], Scalar(0, 0, 255), 2);
   }
     //ROS_INFO("Human Pose drawed");
 }
@@ -503,13 +542,18 @@ void ImageProcessor::drawRobotJoints(Mat& image, vector<Point>& joint_image_cord
         line(image,joint_image_cords[i-1],joint_image_cords[i], Scalar(0, 255, 255), 2);
     }
 }
-void ImageProcessor::getImageCoordinate(Point3f& world_cord, Point& image_cord)
+void ImageProcessor::getImageCoordinate(Point3f& world_cord, Point& image_cord, Mat& cameraMatrix)
 {
+    double fx = cameraMatrix.at<double>(0, 0);
+    double fy = cameraMatrix.at<double>(1, 1);
+    double cx = cameraMatrix.at<double>(0, 2);
+    double cy = cameraMatrix.at<double>(1, 2);
+
     image_cord.x = (int)(world_cord.x * fx / world_cord.z + cx);
     image_cord.y = (int)(world_cord.y * fy / world_cord.z + cy);
 }
 
-void ImageProcessor::calculateRobotPose(vector<Point>& joint_image_cords, vector<Point3f>& joint_3d_cords)
+void ImageProcessor::calculateRobotPose(vector<Point>& joint_image_cords, vector<Point3f>& joint_3d_cords, bool prime = true)
 {
   //tf::TransformListener robot_pose_listener;
     string robot_reference_frame;
@@ -520,6 +564,10 @@ void ImageProcessor::calculateRobotPose(vector<Point>& joint_image_cords, vector
     else
     {
         robot_reference_frame = "camera_base";
+    }
+
+    if (prime){
+      robot_reference_frame = "prime_" + robot_reference_frame;
     }
 
 
@@ -540,13 +588,18 @@ void ImageProcessor::calculateRobotPose(vector<Point>& joint_image_cords, vector
     isCamBaseTransformAvailable = true;
     Point3f base_location(cam_base_transform.getOrigin().x(), cam_base_transform.getOrigin().y(), cam_base_transform.getOrigin().z());
     Point base_image_cord;
-    getImageCoordinate(base_location, base_image_cord);
+    if(prime){
+      getImageCoordinate(base_location, base_image_cord, cameraMatrix_prime);
+    }
+    else{
+      getImageCoordinate(base_location, base_image_cord, cameraMatrix_sub);
+    }
     //circle(color_mat, base_image_cord, 2, Scalar(0, 255, 255), -1, 8);
 
     ostringstream cord_text;
     cord_text.str("");
     cord_text << "base_position:" << " at" << '(' << base_location.x << ',' << base_location.y << ',' << base_location.z << ')';
-    putText(color_mat, cord_text.str(), Point(20,400), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0,255, 0));
+    //putText(color_mat, cord_text.str(), Point(20,400), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0,255, 0));
 
     //vector<Point3f> joint_3d_cords;
     joint_3d_cords.push_back(base_location);
@@ -566,35 +619,38 @@ void ImageProcessor::calculateRobotPose(vector<Point>& joint_image_cords, vector
         Point3f location(joint_transforms.getOrigin().x(), joint_transforms.getOrigin().y(), joint_transforms.getOrigin().z());
         joint_3d_cords.push_back(location);
         Point joint_image_cord;
-        getImageCoordinate(location, joint_image_cord);
+        if(prime){
+          getImageCoordinate(location, joint_image_cord, cameraMatrix_prime);
+        }
+        else{
+          getImageCoordinate(location, joint_image_cord, cameraMatrix_sub);
+        }
         joint_image_cords.push_back(joint_image_cord);
         //ROS_INFO("Robot Pose Get!");
 
     }
 
 }
-void ImageProcessor::loadCalibrationFiles()
+void ImageProcessor::loadCalibrationFiles(string& calib_path, cv::Mat& cameraMatrix, cv::Mat& distortion, double scale)
 {
 
     cv::FileStorage fs;
-    string calib_path = "/home/agent/catkin_ws/src/camera_wrapper/calibration_data/003415165047/";
-    cv::Mat cameraMatrix_color;
+
+    cv::Mat cameraMatrix_origin;
 
 
-  if(fs.open(calib_path + "calib_color.yaml", cv::FileStorage::READ))
+  if(fs.open(calib_path + "/calib_color.yaml", cv::FileStorage::READ))
   {
-    fs["cameraMatrix"] >> cameraMatrix_color;
-    cameraMatrix_color_clipped = cameraMatrix_color.clone();
-    cameraMatrix_color_clipped.at<double>(0, 0) /= 2;
-    cameraMatrix_color_clipped.at<double>(1, 1) /= 2;
-    cameraMatrix_color_clipped.at<double>(0, 2) /= 2;
-    cameraMatrix_color_clipped.at<double>(1, 2) /= 2;
-    fx = cameraMatrix_color_clipped.at<double>(0, 0);
-    fy = cameraMatrix_color_clipped.at<double>(1, 1);
-    cx = cameraMatrix_color_clipped.at<double>(0, 2);
-    cy = cameraMatrix_color_clipped.at<double>(1, 2);
+    fs["cameraMatrix"] >> cameraMatrix_origin;
+    cameraMatrix = cameraMatrix_origin.clone();
+    cameraMatrix.at<double>(0, 0) *= scale;
+    cameraMatrix.at<double>(1, 1) *= scale;
+    cameraMatrix.at<double>(0, 2) *= scale;
+    cameraMatrix.at<double>(1, 2) *= scale;
 
-    fs["distortionCoefficients"] >> distortion_color;
+    distortion= cv::Mat::zeros(1, 5, CV_64F);
+
+    //fs["distortionCoefficients"] >> distortion_color;
     cout << "color matrix load success"<< endl;
     fs.release();
 
@@ -603,19 +659,23 @@ void ImageProcessor::loadCalibrationFiles()
   else
   {
     cout << "No calibration file: calib_color.yalm, using default calibration setting" << endl;
-    cameraMatrix_color_clipped = cv::Mat::eye(3, 3, CV_64F);
-    distortion_color = cv::Mat::zeros(1, 5, CV_64F);
+    cameraMatrix = cv::Mat::eye(3, 3, CV_64F);
+    distortion = cv::Mat::zeros(1, 5, CV_64F);
 
 
   }
 
 
 }
-void ImageProcessor::getWorldCoordinate(Point2f& image_cord, Point3f& cord)
+void ImageProcessor::getWorldCoordinate(Point2f& image_cord, Point3f& cord,Mat& cameraMatrix)
 {
 
-    if(!color_mat.empty() && !depth_mat.empty() && image_cord.x < sizeColor.width && image_cord.y < sizeColor.height)
+    if(!prime_color_mat.empty() && !depth_mat.empty() && image_cord.x < sizeColor.width && image_cord.y < sizeColor.height)
     {
+        double fx = cameraMatrix.at<double>(0, 0);
+        double fy = cameraMatrix.at<double>(1, 1);
+        double cx = cameraMatrix.at<double>(0, 2);
+        double cy = cameraMatrix.at<double>(1, 2);
 
         uint16_t d = depth_mat.at<uint16_t>(image_cord);
 
@@ -633,12 +693,13 @@ void ImageProcessor::depthimageCallback(const sensor_msgs::ImageConstPtr& msgdep
     {
       vector<int> markerfiveids(1,5);
 
-    	depth_mat = cv_bridge::toCvShare(msgdepth, "16UC1")->image;
-      depth_debug = depth_mat.clone();
+    	Mat depth_image = cv_bridge::toCvShare(msgdepth, "16UC1")->image;
+      depth_mat = depth_image.clone();
 
       Mat depth_viz;
       visualize_depth(depth_mat, depth_viz);
-      cv::imshow("depth", depth_viz);
+      //cv::imshow("depth", depth_viz);
+      waitKey();
     	//cv::Ptr<cv::aruco::Dictionary> dictionary = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50);
     	//detectorParams->cornerRefinementMethod = aruco::CORNER_REFINE_SUBPIX;
        // cv::Mat displyImg = cv_bridge::toCvShare(msgdepth, "mono16")->image.clone();
@@ -646,7 +707,7 @@ void ImageProcessor::depthimageCallback(const sensor_msgs::ImageConstPtr& msgdep
         vector<Point3f> world_cord;
         //marker_center.push_back(averagecorners);
         Point3f cord3(0.f, 0.f, 0.f);
-        getWorldCoordinate(averagecorners, cord3);
+        getWorldCoordinate(averagecorners, cord3, cameraMatrix_prime);
         world_cord.push_back(cord3);
         sendMarkerTf(world_cord, markerfiveids);
 
@@ -656,40 +717,42 @@ void ImageProcessor::depthimageCallback(const sensor_msgs::ImageConstPtr& msgdep
     	ROS_ERROR("Could not convert from '%s' to 'mono16'.", msgdepth->encoding.c_str());
     }
 }
-void ImageProcessor::imageCallback(const sensor_msgs::ImageConstPtr& msg)
+void ImageProcessor::prime_imageCallback(const sensor_msgs::ImageConstPtr& msg)
 {
     try
     {
       //cv::imshow("view", cv_bridge::toCvShare(msg, "bgr8")->image);
-      color_mat = cv_bridge::toCvShare(msg, "bgr8")->image;
-      color_mat_copy = color_mat.clone();
-      cv::Mat displyImg = color_mat.clone();
-
+      Mat color_mat = cv_bridge::toCvShare(msg, "bgr8")->image;
+      pthread_mutex_lock(&mutex);
+      prime_color_mat = color_mat.clone();
+      pthread_mutex_unlock(&mutex);
+      Mat displyImg = color_mat.clone();
+/***
       vector<Point> joint_image_cords;
       vector<Point3f> joint_3d_cords;
       //namedWindow("Color Frame");
       vector<Point> human_image_cords;
       vector<Point3f> human_3d_cords;
 
-      if(!color_mat.empty() && !depth_mat.empty())
+      if(!prime_color_mat.empty())
       {
-        calculateRobotPose(joint_image_cords, joint_3d_cords);
+        calculateRobotPose(joint_image_cords, joint_3d_cords, true);
         if(!joint_image_cords.empty())
         {
           //Mat depth_debug;
           //depth_debug = depth_mat.clone();
-          if(!removeRobotImage(displyImg, joint_image_cords, joint_3d_cords, depth_debug))
+          //if(!removeRobotImage(displyImg, joint_image_cords, joint_3d_cords, depth_debug))
             //imshow("origin depth", depth_mat);
           drawRobotJoints(displyImg,joint_image_cords);
         }
-        calculateHumanPose(human_image_cords, human_3d_cords);
+        calculateHumanPose(human_image_cords, human_3d_cords, true);
         if(!human_image_cords.empty())
           draw_human_pose(displyImg, human_image_cords);
         //imshow("Color Frame", color_mat);
         if(!left_key_points.empty())
           drawKeyPoints(displyImg, left_key_points);
       }
-
+***/
 
 
       cv::Ptr<cv::aruco::Dictionary> dictionary = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50);
@@ -705,7 +768,8 @@ void ImageProcessor::imageCallback(const sensor_msgs::ImageConstPtr& msg)
       //std::vector<cv::Point3f> world_cord;
       //  vector< Vec3d > rvecs, tvecs;
       // detect markers and estimate pose
-      cv::aruco::detectMarkers(color_mat, dictionary, corners, ids);
+      cv::aruco::detectMarkers(prime_color_mat, dictionary, corners, ids);
+/**
       for(int j = 0; j < ids.size(); j++)
       {
         if(ids[j] == 5)
@@ -719,18 +783,18 @@ void ImageProcessor::imageCallback(const sensor_msgs::ImageConstPtr& msg)
           averagecorners /= 4.0;
         }
       }
-
+***/
       //printf("%d\n",ids.size());
       if (ids.size() > 0)
       {
-        cv::aruco::drawDetectedMarkers(displyImg, corners, ids);
+  //      cv::aruco::drawDetectedMarkers(displyImg, corners, ids);
         //aruco::drawDetectedMarkers(displyImg, rejected, noArray(), Scalar(100, 0, 255));
         std::vector<cv::Vec3d> rvecs,tvecs;
-        cv::aruco::estimatePoseSingleMarkers(corners,0.133f,cameraMatrix_color_clipped,distortion_color,rvecs,tvecs);
+        cv::aruco::estimatePoseSingleMarkers(corners,0.133f,cameraMatrix_prime,distortion_prime,rvecs,tvecs);
         for(int i = 0; i<ids.size(); i++)
           {
 
-             cv::aruco::drawAxis(displyImg,cameraMatrix_color_clipped,distortion_color,rvecs[i],tvecs[i],0.1);
+    //         cv::aruco::drawAxis(displyImg,cameraMatrix_prime,distortion_prime,rvecs[i],tvecs[i],0.1);
              if (ids[i] == 0)
              {
                  if(marker_0_sum_count == 0){
@@ -756,15 +820,138 @@ void ImageProcessor::imageCallback(const sensor_msgs::ImageConstPtr& msg)
                    marker_0_tvecs_sum = tvecs[i];
                    marker_0_sum_count = 1;
                  }
+                 sendCameraTF(tvecs, rvecs, ids, true);
              }
-             //sendMarkerTF(tvecs, rvecs, ids);
-             sendCameraTF(tvecs, rvecs, ids);
+          }
+          sendMarkerTF(tvecs, rvecs, ids);
+      }
+      //cv::aruco::drawDetectedMarkers(displyImg, rejected, noArray(), Scalar(100, 0, 255));
+      //cv::resize(displyImg, displyImg, Size(960, 540));
+      //displyMat_prime = displyImg.clone();
+      //cv::imshow("color_prime",displyImg);
+      //waitKey(30);
+      //cv::waitKey(30);
+    }
+    catch (cv_bridge::Exception& e)
+    {
+    	ROS_ERROR("Could not convert from '%s' to 'bgr8'.", msg->encoding.c_str());
+    }
+}
+
+void ImageProcessor::sub_imageCallback(const sensor_msgs::ImageConstPtr& msg)
+{
+    try
+    {
+      //cv::imshow("view", cv_bridge::toCvShare(msg, "bgr8")->image);
+      Mat color_mat = cv_bridge::toCvShare(msg, "bgr8")->image;
+      pthread_mutex_lock(&mutex);
+      sub_color_mat = color_mat.clone();
+      pthread_mutex_unlock(&mutex);
+      Mat displyImg = color_mat.clone();
+      /**
+      vector<Point> joint_image_cords;
+      vector<Point3f> joint_3d_cords;
+      //namedWindow("Color Frame");
+      vector<Point> human_image_cords;
+      vector<Point3f> human_3d_cords;
+
+      if(!sub_color_mat.empty())
+      {
+        calculateRobotPose(joint_image_cords, joint_3d_cords, false);
+        if(!joint_image_cords.empty())
+        {
+          //Mat depth_debug;
+          //depth_debug = depth_mat.clone();
+          //if(!removeRobotImage(displyImg, joint_image_cords, joint_3d_cords, depth_debug))
+            //imshow("origin depth", depth_mat);
+          drawRobotJoints(displyImg,joint_image_cords);
+        }
+        calculateHumanPose(human_image_cords, human_3d_cords, false);
+        if(!human_image_cords.empty())
+          draw_human_pose(displyImg, human_image_cords);
+        //imshow("Color Frame", color_mat);
+        if(!left_key_points.empty())
+          drawKeyPoints(displyImg, right_key_points);
+      }
+      ***/
+
+
+      cv::Ptr<cv::aruco::Dictionary> dictionary = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50);
+
+      Ptr<cv::aruco::DetectorParameters> detectorParams = cv::aruco::DetectorParameters::create();
+      //detectorParams->cornerRefinementMethod = aruco::CORNER_REFINE_SUBPIX;
+      detectorParams->cornerRefinementMethod = aruco::CORNER_REFINE_CONTOUR;
+      //cv::Mat displyImg = color_mat.clone();
+      //flip(displyImg,displyImg,1);
+      std::vector< int > ids;
+      std::vector< std::vector< cv::Point2f > > corners, rejected;
+
+      //std::vector<cv::Point3f> world_cord;
+      //  vector< Vec3d > rvecs, tvecs;
+      // detect markers and estimate pose
+      cv::aruco::detectMarkers(sub_color_mat, dictionary, corners, ids);
+      /**
+      for(int j = 0; j < ids.size(); j++)
+      {
+        if(ids[j] == 5)
+        {
+          averagecorners.x = 0.f;
+          averagecorners.y = 0.f;
+          for (int i = 0; i < corners[j].size(); i++)
+          {
+       		    averagecorners = averagecorners + corners[j][i];
+          }
+          averagecorners /= 4.0;
+        }
+      }
+      **/
+
+      //printf("%d\n",ids.size());
+      if (ids.size() > 0)
+      {
+        //cv::aruco::drawDetectedMarkers(displyImg, corners, ids);
+        //aruco::drawDetectedMarkers(displyImg, rejected, noArray(), Scalar(100, 0, 255));
+        std::vector<cv::Vec3d> rvecs,tvecs;
+        cv::aruco::estimatePoseSingleMarkers(corners,0.133f,cameraMatrix_sub,distortion_sub,rvecs,tvecs);
+        for(int i = 0; i<ids.size(); i++)
+          {
+
+             //cv::aruco::drawAxis(displyImg,cameraMatrix_sub,distortion_sub, rvecs[i],tvecs[i],0.1);
+             if (ids[i] == 0)
+             {
+                 if(marker_0_sum_count == 0){
+                     marker_0_rvecs_sum = rvecs[i];
+                     marker_0_tvecs_sum = tvecs[i];
+                     marker_0_sum_count = 1;
+                 }
+                 Vec3d t_diff = marker_0_tvecs_sum / marker_0_sum_count - tvecs[i];
+                 Vec3d r_diff = marker_0_rvecs_sum / marker_0_sum_count - rvecs[i];
+                 if ((norm(t_diff) < 0.03 && norm(r_diff) < 0.1 )){
+                   if(marker_0_sum_count < 100){
+                     marker_0_rvecs_sum += rvecs[i];
+                     marker_0_tvecs_sum += tvecs[i];
+                     marker_0_sum_count ++;
+                   }
+                   else{
+                   tvecs[i] = marker_0_tvecs_sum / marker_0_sum_count;
+                   rvecs[i] = marker_0_rvecs_sum / marker_0_sum_count;
+                   }
+                 }
+                 else{
+                   marker_0_rvecs_sum = rvecs[i];
+                   marker_0_tvecs_sum = tvecs[i];
+                   marker_0_sum_count = 1;
+                 }
+             sendCameraTF(tvecs, rvecs, ids, false);
+             }
 
           }
       }
-      cv::aruco::drawDetectedMarkers(displyImg, rejected, noArray(), Scalar(100, 0, 255));
-      cv::imshow("Markers",displyImg);
-      cv::waitKey(30);
+      //cv::aruco::drawDetectedMarkers(displyImg, rejected, noArray(), Scalar(100, 0, 255));
+      //cv::resize(displyImg, displyImg, Size(960, 540));
+      //displyMat_sub = displyImg.clone();
+      //cv::imshow("color_sub",displyImg);
+      //cv::waitKey(30);
     }
     catch (cv_bridge::Exception& e)
     {
@@ -805,7 +992,7 @@ void ImageProcessor::sendMarkerTF(vector<Vec3d>& marker_trans, vector<Vec3d>& ma
     static tf::TransformBroadcaster marker_position_broadcaster;
     for(int i = 0; i < ids.size(); i++)
     {
-      if(ids[i] == 0 || 10)
+      if(ids[i] == 10)
       {
 
         cv::Rodrigues(marker_rot[i], rot);
@@ -825,7 +1012,7 @@ void ImageProcessor::sendMarkerTF(vector<Vec3d>& marker_trans, vector<Vec3d>& ma
     }
 }
 
-void ImageProcessor::sendCameraTF(vector<Vec3d>& marker_trans, vector<Vec3d>& marker_rot, vector<int>& ids)
+void ImageProcessor::sendCameraTF(vector<Vec3d>& marker_trans, vector<Vec3d>& marker_rot, vector<int>& ids, bool prime = true)
 {
     Mat rot(3, 3, CV_64FC1);
     Mat rot_to_ros(3, 3, CV_64FC1);
@@ -838,6 +1025,11 @@ void ImageProcessor::sendCameraTF(vector<Vec3d>& marker_trans, vector<Vec3d>& ma
     rot_to_ros.at<double>(2,0) = 0.0;
     rot_to_ros.at<double>(2,1) = 1.0;
     rot_to_ros.at<double>(2,2) = 0.0;
+
+    string camera_frame_name("camera_base");
+    if(prime){
+      camera_frame_name = "prime_" + camera_frame_name;
+    }
 
     static tf::TransformBroadcaster marker_position_broadcaster;
     for(int i = 0; i < ids.size(); i++)
@@ -857,7 +1049,7 @@ void ImageProcessor::sendCameraTF(vector<Vec3d>& marker_trans, vector<Vec3d>& ma
         tf::Transform transform(tf_rot, tf_trans);
         ostringstream oss;
         oss << "marker_" << ids[i];
-        marker_position_broadcaster.sendTransform(tf::StampedTransform(transform.inverse(), ros::Time::now(), oss.str(), "camera_base"));
+        marker_position_broadcaster.sendTransform(tf::StampedTransform(transform.inverse(), ros::Time::now(), oss.str(), camera_frame_name));
       }
     }
 }
@@ -953,7 +1145,7 @@ for (int iter = 0; iter < robot_image_3d_pos.size() - 1; iter++)
     robot_3d_point.y = (float)(robot_image_3d_pos[iter].y + i*(robot_image_3d_pos[iter+1].y - robot_image_3d_pos[iter].y));
     robot_3d_point.z = (float)(robot_image_3d_pos[iter].z + i*(robot_image_3d_pos[iter+1].z - robot_image_3d_pos[iter].z));
     //ROS_INFO("我估计没有问题！");
-    getImageCoordinate(robot_3d_point,robot_2d_point);
+    getImageCoordinate(robot_3d_point,robot_2d_point, cameraMatrix_prime);
     pending_robot_point.push_back(robot_2d_point);
     pending_robot_3d_point.push_back(robot_3d_point);
   }
@@ -1028,27 +1220,22 @@ void ImageProcessor::stopRobotThread()
     int ret = pthread_cancel(id1);
 }
 
-bool ImageProcessor::getImage(Mat& image)
-{
-  if(!color_mat.empty()){
-    image = color_mat.clone();
-    return true;
-  }
-  else
-    return false;
-}
 
 void ImageProcessor::publishSplicedImage()
 {
-  Mat spliced = Mat(540, 960, CV_8UC3);
-  Mat color_image;
-  if(!color_mat_copy.empty()){
-      color_image = color_mat_copy.clone();
+  Mat spliced = Mat(1080, 960, CV_8UC3);
+  pthread_mutex_lock(&mutex);
+  //Mat color_image;
+  if(!prime_color_mat.empty() && !sub_color_mat.empty()){
+      //color_image = prime_color_mat.clone();
       //cout << "x:" << color_image.cols;
       //cout << "y:" << color_image.rows;
-      Rect left_piece = Rect(0, 0, 480, 540);
-      Rect right_piece = Rect(480, 0, 480, 540);
+      Rect upper_piece = Rect(0, 0, 960, 540);
+      Rect lower_piece = Rect(0, 540, 960, 540);
+      cv::Size sizeSubSampled(960, 540);
+      Mat roi_image;
 
+/***
       int roi_left;
 
       if(left_key_points_center.x <= 360){
@@ -1063,18 +1250,22 @@ void ImageProcessor::publishSplicedImage()
           roi_left = 480;
           left_ROI = 480;
       }
-
-      Rect roi_rect = Rect(roi_left, 0, 480, 540);
+***/
+      //Rect roi_rect = Rect(roi_left, 0, 480, 540);
       //roi_image = color_image(roi_left)
-      color_image(roi_rect).copyTo(spliced(left_piece));
-      color_image(roi_rect).copyTo(spliced(right_piece));
+      cv::resize(prime_color_mat, roi_image, sizeSubSampled);
+      roi_image.copyTo(spliced(upper_piece));
+      cv::resize(sub_color_mat, roi_image, sizeSubSampled);
+      roi_image.copyTo(spliced(lower_piece));
+      pthread_mutex_unlock(&mutex);
       //imshow("spliced", spliced);
       sensor_msgs::ImagePtr msg;
+
       //if(pub.getNumSubscribers() > 0)
 
 
-          msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", spliced).toImageMsg();
-          spliced_image_pub.publish(msg);
+      msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", spliced).toImageMsg();
+      spliced_image_pub.publish(msg);
 
   }
 }
@@ -1097,6 +1288,18 @@ void ImageProcessor::startSplicedThread(){
 void ImageProcessor::stopSplicedThread(){
   int ret = pthread_cancel(id2);
 }
+void ImageProcessor::displayImg(){
+  pthread_mutex_lock(&mutex);
+  if(!displyMat_prime.empty()){
+    imshow("color_prime", displyMat_prime);
+    waitKey(1);
+  }
+  if(!displyMat_sub.empty()){
+    imshow("color_sub", displyMat_sub);
+    waitKey(1);
+  }
+  pthread_mutex_unlock(&mutex);
+}
 
 int main(int argc, char** argv)
 {
@@ -1104,6 +1307,8 @@ int main(int argc, char** argv)
   //cv::namedWindow("view");
   cv::startWindowThread();
   bool isCalibrationMode = true;
+  bool rect = false;
+  bool sendSplicedImage = false;
   string sensor = "kinect_1";
   if(argc > 1)
   {
@@ -1116,6 +1321,15 @@ int main(int argc, char** argv)
             isCalibrationMode = false;
             ROS_INFO("calibrationMode disabled\n");
         }
+        else if(arg == "rect")
+        {
+            rect = true;
+            ROS_INFO("Subscribing to rectified image");
+        }
+        else if(arg == "openpose_topic")
+        {
+          sendSplicedImage = true;
+        }
         else
         {
           sensor = arg;
@@ -1123,25 +1337,44 @@ int main(int argc, char** argv)
         }
     }
   }
-  ImageProcessor img_processor(sensor, isCalibrationMode);
-  img_processor.loadCalibrationFiles();
-  //ros::AsyncSpinner spinner(2); //use 2 threads
-  //spinner.start();
-  //ros::Rate rate(200);
+  //cv::namedWindow("depth");
+  //cv::namedWindow("color_sub");
+  //cv::namedWindow("color_prime");
+
+  ImageProcessor img_processor(rect, isCalibrationMode);
+  img_processor.initCalibration();
+//  ros::AsyncSpinner spinner(3);
+  //use 2 threads
+  ros::Rate rate(30);
   if(!isCalibrationMode){
     img_processor.startRobotThread();
   }
+  if(sendSplicedImage)
   img_processor.startSplicedThread();
-  //ros::MultiThreadedSpinner spinner(2);
-  //spinner.spin();
-  //ros::waitForShutdown();
+  ros::MultiThreadedSpinner spinner(2);
+  spinner.spin();
+  ros::waitForShutdown();
   //spinner.stop();
 
-  ros::spin();
+/**
+//  spinner.start();
+//  rate.sleep();
+  while(ros::ok())
+  {
+    //spinner.stop();
+    img_processor.displayImg();
+    ROS_INFO("FUCK!");
+    //spinner.start();
+    rate.sleep();
+  }
+  spinner.stop();
+**/
+  //ros::spin();
   if(!isCalibrationMode){
     img_processor.stopRobotThread();
   }
-  img_processor.stopSplicedThread();
+  if(sendSplicedImage)
+    img_processor.stopSplicedThread();
   /***
   while(ros::ok())
   {

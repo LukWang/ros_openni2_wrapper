@@ -69,22 +69,22 @@ private:
     openni::VideoFrameRef* depth_frame_;
     openni::VideoFrameRef* color_frame_;
 
-	DepthRegistrationOpenCL* depthReg;
-	cv::Size sizeColor, sizeColorClipped, sizeDepth;
-	cv::Mat cameraMatrix_color, cameraMatrix_color_clipped, cameraMatrix_depth, distortion_color, distortion_depth;
-	cv::Mat cam_rot, cam_trans;
-	cv::Mat map1_color, map2_color;
-	cv::Mat color_mat;
-	cv::Mat depth_mat;
-	//cv::Mat combined_mat;
+		DepthRegistrationOpenCL* depthReg;
+		cv::Size sizeColor, sizeColorClipped, sizeDepth;
+		cv::Mat cameraMatrix_color, cameraMatrix_color_clipped, cameraMatrix_depth, distortion_color, distortion_depth;
+		cv::Mat cam_rot, cam_trans;
+		cv::Mat map1_color, map2_color;
+		cv::Mat color_mat;
+		cv::Mat depth_mat;
+		//cv::Mat combined_mat;
     ros::NodeHandle node_handle;
     image_transport::ImageTransport it;
     image_transport::Publisher pub ;
     image_transport::Publisher pub2;
-	double depthShift;
-	bool saveColorFrame;
-	string frame_save_path;
-	int color_frame_count;
+		double depthShift;
+		bool saveColorFrame;
+		string frame_save_path;
+		int color_frame_count;
     double timeFPS;
 
 	//MarkerDetector marker_detector;
@@ -124,13 +124,31 @@ void Grabber::InitOpenNI()
 
 void Grabber::InitDevice()
 {
-    device_ = new openni::Device();
-    auto rc = device_->open(openni::ANY_DEVICE);
-    if (rc != openni::STATUS_OK)
-    {
-        printf("Couldn't open device\n%s\n", openni::OpenNI::getExtendedError());
-        exit(0);
-    }
+
+		device_ = new openni::Device();
+		openni::Array<openni::DeviceInfo> aDeviceList;
+		openni::OpenNI::enumerateDevices( &aDeviceList );
+		cout << "There are " << aDeviceList.getSize() << " devices on this system." << endl;
+		for( int i = 0; i < aDeviceList.getSize(); ++ i )
+		{
+  		cout << "Device " << i << "\n";
+  		const openni::DeviceInfo& rDevInfo = aDeviceList[i];
+
+  		cout << " " << rDevInfo.getName() << " by " << rDevInfo.getVendor() << "\n";
+  		cout << " PID: " << rDevInfo.getUsbProductId() << "\n";
+  		cout << " VID: " << rDevInfo.getUsbVendorId() << "\n";
+  		cout << " URI: " << rDevInfo.getUri() << endl;
+			if(rDevInfo.getUri() == "freenect2://0?serial=092465240847"){
+				auto rc = device_->open(rDevInfo.getUri());
+	    	if (rc != openni::STATUS_OK)
+	    	{
+	        printf("Couldn't open device\n%s\n", openni::OpenNI::getExtendedError());
+	        exit(0);
+	    	}
+			}
+			break;
+		}
+
 }
 
 bool Grabber::InitCalibration()
@@ -142,7 +160,7 @@ bool Grabber::InitCalibration()
 	cv::initUndistortRectifyMap(cameraMatrix_color, distortion_color, cv::Mat(), cameraMatrix_color, sizeColor, mapType, map1_color, map2_color);
 
 
-	if(!depthReg->init(cameraMatrix_color_clipped, sizeColorClipped, cameraMatrix_depth, sizeDepth, distortion_depth, cam_rot, cam_trans, 0.5f, 12.0f,1))
+	if(depthReg->init(cameraMatrix_color_clipped, sizeColorClipped, cameraMatrix_depth, sizeDepth, distortion_depth, cam_rot, cam_trans, 0.5f, 12.0f,1))
 		return true;
 	else
 	{
