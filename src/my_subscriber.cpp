@@ -81,12 +81,14 @@ void visualize_depth(Mat& depth_image, Mat& depth_viz)
 class ImageProcessor
 {
   public:
-    ImageProcessor(string sensor, bool isCalibrationMode):it(nh), sizeColor(960, 540), left_key_points_center(480,260), right_key_points_center(480,260), left_ROI(240), right_ROI(240){
+    ImageProcessor(string sensor, bool isCalibrationMode):it(nh), priv_nh(ros::NodeHandle("~")), sizeColor(1920, 1080), left_key_points_center(480,260), right_key_points_center(480,260), left_ROI(240), right_ROI(240){
       color_mat = Mat(sizeColor, CV_8UC3);
       depth_mat = Mat(sizeColor, CV_16UC1);
 
-      string color_topic = "/" + sensor + "/qhd/image_color";
-      string depth_topic = "/" + sensor + "/qhd/image_depth_rect";
+
+
+      string color_topic = "/" + sensor + "/hd/image_color_rect";
+      string depth_topic = "/" + sensor + "/hd/image_depth_rect";
       sub = it.subscribe(color_topic.c_str(), 1,&ImageProcessor::imageCallback,this);
       sub2 = it.subscribe(depth_topic.c_str(),1,&ImageProcessor::depthimageCallback,this);
 
@@ -165,7 +167,7 @@ class ImageProcessor
     void human_keypoints_callback(openpose_ros_msgs::OpenPoseHumanList keypoints);
     void drawKeyPoints(Mat& image, vector<KeyPoints>& points);
   private:
-    ros::NodeHandle nh;
+    ros::NodeHandle nh, priv_nh;
     image_transport::ImageTransport it;
     image_transport::Subscriber sub;
     image_transport::Subscriber sub2;
@@ -560,7 +562,7 @@ void ImageProcessor::calculateRobotPose(vector<Point>& joint_image_cords, vector
         }
         catch(tf::TransformException ex)
         {
-            //ROS_ERROR("%s", ex.what());
+            ROS_ERROR("%s", ex.what());
             continue;
         }
         Point3f location(joint_transforms.getOrigin().x(), joint_transforms.getOrigin().y(), joint_transforms.getOrigin().z());
@@ -585,10 +587,10 @@ void ImageProcessor::loadCalibrationFiles()
   {
     fs["cameraMatrix"] >> cameraMatrix_color;
     cameraMatrix_color_clipped = cameraMatrix_color.clone();
-    cameraMatrix_color_clipped.at<double>(0, 0) /= 2;
-    cameraMatrix_color_clipped.at<double>(1, 1) /= 2;
-    cameraMatrix_color_clipped.at<double>(0, 2) /= 2;
-    cameraMatrix_color_clipped.at<double>(1, 2) /= 2;
+    cameraMatrix_color_clipped.at<double>(0, 0) /= 1;
+    cameraMatrix_color_clipped.at<double>(1, 1) /= 1;
+    cameraMatrix_color_clipped.at<double>(0, 2) /= 1;
+    cameraMatrix_color_clipped.at<double>(1, 2) /= 1;
     fx = cameraMatrix_color_clipped.at<double>(0, 0);
     fy = cameraMatrix_color_clipped.at<double>(1, 1);
     cx = cameraMatrix_color_clipped.at<double>(0, 2);
@@ -658,6 +660,8 @@ void ImageProcessor::depthimageCallback(const sensor_msgs::ImageConstPtr& msgdep
 }
 void ImageProcessor::imageCallback(const sensor_msgs::ImageConstPtr& msg)
 {
+    bool drawRobot;
+    nh.param("drawRobot", drawRobot, false);
     try
     {
       //cv::imshow("view", cv_bridge::toCvShare(msg, "bgr8")->image);
@@ -678,9 +682,10 @@ void ImageProcessor::imageCallback(const sensor_msgs::ImageConstPtr& msg)
         {
           //Mat depth_debug;
           //depth_debug = depth_mat.clone();
-          if(!removeRobotImage(displyImg, joint_image_cords, joint_3d_cords, depth_debug))
+          //if(!removeRobotImage(displyImg, joint_image_cords, joint_3d_cords, depth_debug))
             //imshow("origin depth", depth_mat);
-          drawRobotJoints(displyImg,joint_image_cords);
+          if(drawRobot)
+            drawRobotJoints(displyImg,joint_image_cords);
         }
         calculateHumanPose(human_image_cords, human_3d_cords);
         if(!human_image_cords.empty())
@@ -697,6 +702,9 @@ void ImageProcessor::imageCallback(const sensor_msgs::ImageConstPtr& msg)
       Ptr<cv::aruco::DetectorParameters> detectorParams = cv::aruco::DetectorParameters::create();
       //detectorParams->cornerRefinementMethod = aruco::CORNER_REFINE_SUBPIX;
       detectorParams->cornerRefinementMethod = aruco::CORNER_REFINE_CONTOUR;
+      detectorParams->errorCorrectionRate = 1.0;
+      detectorParams->minOtsuStdDev = 50;
+
       //cv::Mat displyImg = color_mat.clone();
       //flip(displyImg,displyImg,1);
       std::vector< int > ids;
@@ -705,7 +713,7 @@ void ImageProcessor::imageCallback(const sensor_msgs::ImageConstPtr& msg)
       //std::vector<cv::Point3f> world_cord;
       //  vector< Vec3d > rvecs, tvecs;
       // detect markers and estimate pose
-      cv::aruco::detectMarkers(color_mat, dictionary, corners, ids);
+      cv::aruco::detectMarkers(color_mat, dictionary, corners, ids, detectorParams);
       for(int j = 0; j < ids.size(); j++)
       {
         if(ids[j] == 5)
@@ -761,7 +769,9 @@ void ImageProcessor::imageCallback(const sensor_msgs::ImageConstPtr& msg)
              sendCameraTF(tvecs, rvecs, ids);
 
           }
+            sendMarkerTF(tvecs, rvecs, ids);
       }
+
       cv::aruco::drawDetectedMarkers(displyImg, rejected, noArray(), Scalar(100, 0, 255));
       cv::imshow("Markers",displyImg);
       cv::waitKey(30);
@@ -805,7 +815,7 @@ void ImageProcessor::sendMarkerTF(vector<Vec3d>& marker_trans, vector<Vec3d>& ma
     static tf::TransformBroadcaster marker_position_broadcaster;
     for(int i = 0; i < ids.size(); i++)
     {
-      if(ids[i] == 0 || 10)
+      if(ids[i] == 10)
       {
 
         cv::Rodrigues(marker_rot[i], rot);
@@ -903,7 +913,7 @@ void ImageProcessor::loadRobotPoseFile(string filename)
 void ImageProcessor::linkToRobotTf()
 {
     static tf::TransformBroadcaster robot_pose_broadcaster;
-    robot_pose_broadcaster.sendTransform(tf::StampedTransform(robot_pose_tansform, ros::Time::now(), "marker_0", "base_link"));
+    robot_pose_broadcaster.sendTransform(tf::StampedTransform(robot_pose_tansform, ros::Time::now(), "marker_0", "ur_base"));
 }
 
 bool ImageProcessor::removeRobotImage(Mat& image,vector<Point>& robot_image_pos,
@@ -1131,7 +1141,7 @@ int main(int argc, char** argv)
   if(!isCalibrationMode){
     img_processor.startRobotThread();
   }
-  img_processor.startSplicedThread();
+  //img_processor.startSplicedThread();
   //ros::MultiThreadedSpinner spinner(2);
   //spinner.spin();
   //ros::waitForShutdown();
@@ -1141,7 +1151,7 @@ int main(int argc, char** argv)
   if(!isCalibrationMode){
     img_processor.stopRobotThread();
   }
-  img_processor.stopSplicedThread();
+  //img_processor.stopSplicedThread();
   /***
   while(ros::ok())
   {

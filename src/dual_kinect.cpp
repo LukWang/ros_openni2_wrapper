@@ -85,14 +85,14 @@ void visualize_depth(Mat& depth_image, Mat& depth_viz)
 class ImageProcessor
 {
   public:
-    ImageProcessor(bool rect, bool isCalibrationMode):it(nh), sizeColor(960, 540) //left_key_points_center(480,260) ,right_key_points_center(480,260), left_ROI(240), right_ROI(240)
+    ImageProcessor(bool rect, bool isCalibrationMode):it(nh), sizeColor(960, 540), rect(rect) //left_key_points_center(480,260) ,right_key_points_center(480,260), left_ROI(240), right_ROI(240)
     {
       prime_color_mat = Mat(sizeColor, CV_8UC3);
       sub_color_mat = Mat(sizeColor, CV_8UC3);
       depth_mat = Mat(sizeColor, CV_16UC1);
 
-      string prime_color_topic = "/kinect2_1/qhd/image_color";
-      string sub_color_topic = "/kinect2_2/qhd/image_color";
+      string prime_color_topic = "/kinect2_1/hd/image_color";
+      string sub_color_topic = "/kinect2_2/hd/image_color";
       if(rect){
         prime_color_topic = prime_color_topic + "_rect";
         sub_color_topic = sub_color_topic + "_rect";
@@ -133,8 +133,8 @@ class ImageProcessor
         human_joint_names.push_back("rWrist");
         human_joint_names.push_back("rHand");
 
-        marker_0_sum_count = 0;
-
+        marker_0_sum_count_prime = 0;
+        marker_0_sum_count_sub = 0;
       isCamBaseTransformAvailable = false;
       isCamHumanTransformAvailable = false;
       firstDepth = true;
@@ -151,9 +151,11 @@ class ImageProcessor
 
     void prime_imageCallback(const sensor_msgs::ImageConstPtr& msg);
     void sub_imageCallback(const sensor_msgs::ImageConstPtr& msg);
+    void prime_imageCallback_simple(const sensor_msgs::ImageConstPtr& msg);
+    void sub_imageCallback_simple(const sensor_msgs::ImageConstPtr& msg);
     void depthimageCallback(const sensor_msgs::ImageConstPtr& msgdepth);
     void loadCalibrationFiles(string& calib_path, cv::Mat& cameraMatrix, cv::Mat& distortion, double scale);
-    void initCalibration();
+    void initCalibration(double);
     void sendMarkerTF(vector<Vec3d>& marker_trans, vector<Vec3d>& marker_rot, vector<int>& ids);
     void sendCameraTF(vector<Vec3d>& marker_trans, vector<Vec3d>& marker_rot, vector<int>& ids, bool prime);
     void sendMarkerTf(vector<Point3f>& marker_position, vector<int>& ids);
@@ -166,6 +168,7 @@ class ImageProcessor
     void human_joint_callback(const geometry_msgs::PoseArray& poses);
     void calculateHumanPose(vector<Point>& joint_image_cords, vector<Point3f>& joint_3d_cords, bool);
     void draw_human_pose(Mat& image, vector<Point>& human_joints);
+    void draw_goal_point(Mat&);
     //void getFivemarkerWorldCoordinate(vector<vector<Point2f>>& corners, vector<int>& ids, vector<Point2f>& marker_center, vector<Point3f>& world_cord);
     bool removeRobotImage(Mat& image,vector<Point>& robot_image_pos, vector<Point3f>& robot_image_3d_pos, Mat& );
     bool drawPointPiexs(Mat& image,vector<Point>& robot_image_pos, vector<Point3f>& robot_image_3d_pos, Mat&, int n);
@@ -180,6 +183,8 @@ class ImageProcessor
     void stopSplicedThread();
 
     void displayImg();
+
+    void SwitchTopic();
 
     void human_keypoints_callback(openpose_ros_msgs::OpenPoseHumanList keypoints);
     void drawKeyPoints(Mat& image, vector<KeyPoints>& points);
@@ -204,9 +209,13 @@ class ImageProcessor
     //vector<Point> robot_image_pos;
     //vector<Point3f>robot_image_3d_pos;
 
-    Vec3d marker_0_tvecs_sum;
-    Vec3d marker_0_rvecs_sum;
-    int marker_0_sum_count;
+    Vec3d marker_0_tvecs_sum_prime;
+    Vec3d marker_0_rvecs_sum_prime;
+    int marker_0_sum_count_prime;
+
+    Vec3d marker_0_tvecs_sum_sub;
+    Vec3d marker_0_rvecs_sum_sub;
+    int marker_0_sum_count_sub;
 
     //cv::Mat color_mat;
     cv::Mat prime_color_mat;
@@ -240,7 +249,22 @@ class ImageProcessor
     Point right_key_points_center;
     int left_ROI, right_ROI;
 
+    bool rect;
+
 };
+
+void ImageProcessor::SwitchTopic(){
+
+  initCalibration(0.5);
+  string prime_color_topic = "/kinect2_1/qhd/image_color";
+  string sub_color_topic = "/kinect2_2/qhd/image_color";
+  if(rect){
+    prime_color_topic = prime_color_topic + "_rect";
+    sub_color_topic = sub_color_topic + "_rect";
+  }
+  prime_color_sub = it.subscribe(prime_color_topic.c_str(), 1,&ImageProcessor::prime_imageCallback_simple, this);
+  sub_color_sub = it.subscribe(sub_color_topic.c_str(), 1,&ImageProcessor::sub_imageCallback_simple, this);
+}
 
 void ImageProcessor::human_keypoints_callback(openpose_ros_msgs::OpenPoseHumanList keypoints)
 {
@@ -405,11 +429,11 @@ void ImageProcessor::human_keypoints_callback(openpose_ros_msgs::OpenPoseHumanLi
   }
 }
 
-void ImageProcessor::initCalibration(){
+void ImageProcessor::initCalibration(double scale){
     string calib_path_prime = "/home/agent/catkin_ws/src/iai_kinect2/kinect2_bridge/data/003415165047";
     string calib_path_sub = "/home/agent/catkin_ws/src/iai_kinect2/kinect2_bridge/data/092465240847";
-    loadCalibrationFiles(calib_path_prime, cameraMatrix_prime, distortion_prime, 0.5);
-    loadCalibrationFiles(calib_path_sub, cameraMatrix_sub, distortion_sub, 0.5);
+    loadCalibrationFiles(calib_path_prime, cameraMatrix_prime, distortion_prime, scale);
+    loadCalibrationFiles(calib_path_sub, cameraMatrix_sub, distortion_sub, scale);
 }
 
 void ImageProcessor::drawKeyPoints(Mat& image, vector<KeyPoints>& points)
@@ -791,39 +815,59 @@ void ImageProcessor::prime_imageCallback(const sensor_msgs::ImageConstPtr& msg)
         //aruco::drawDetectedMarkers(displyImg, rejected, noArray(), Scalar(100, 0, 255));
         std::vector<cv::Vec3d> rvecs,tvecs;
         cv::aruco::estimatePoseSingleMarkers(corners,0.133f,cameraMatrix_prime,distortion_prime,rvecs,tvecs);
+        bool has_Marker_0 = false;
         for(int i = 0; i<ids.size(); i++)
           {
 
     //         cv::aruco::drawAxis(displyImg,cameraMatrix_prime,distortion_prime,rvecs[i],tvecs[i],0.1);
              if (ids[i] == 0)
              {
-                 if(marker_0_sum_count == 0){
-                     marker_0_rvecs_sum = rvecs[i];
-                     marker_0_tvecs_sum = tvecs[i];
-                     marker_0_sum_count = 1;
+                 if(marker_0_sum_count_prime == 0){
+                     marker_0_rvecs_sum_prime = rvecs[i];
+                     marker_0_tvecs_sum_prime = tvecs[i];
+                     marker_0_sum_count_prime = 1;
                  }
-                 Vec3d t_diff = marker_0_tvecs_sum / marker_0_sum_count - tvecs[i];
-                 Vec3d r_diff = marker_0_rvecs_sum / marker_0_sum_count - rvecs[i];
+                 Vec3d t_diff = marker_0_tvecs_sum_prime / marker_0_sum_count_prime - tvecs[i];
+                 Vec3d r_diff = marker_0_rvecs_sum_prime / marker_0_sum_count_prime - rvecs[i];
                  if ((norm(t_diff) < 0.03 && norm(r_diff) < 0.1 )){
-                   if(marker_0_sum_count < 100){
-                     marker_0_rvecs_sum += rvecs[i];
-                     marker_0_tvecs_sum += tvecs[i];
-                     marker_0_sum_count ++;
+                   if(marker_0_sum_count_prime < 100){
+                     marker_0_rvecs_sum_prime += rvecs[i];
+                     marker_0_tvecs_sum_prime += tvecs[i];
+                     marker_0_sum_count_prime ++;
                    }
                    else{
-                   tvecs[i] = marker_0_tvecs_sum / marker_0_sum_count;
-                   rvecs[i] = marker_0_rvecs_sum / marker_0_sum_count;
+                   tvecs[i] = marker_0_tvecs_sum_prime / marker_0_sum_count_prime;
+                   rvecs[i] = marker_0_rvecs_sum_prime / marker_0_sum_count_prime;
                    }
                  }
                  else{
-                   marker_0_rvecs_sum = rvecs[i];
-                   marker_0_tvecs_sum = tvecs[i];
-                   marker_0_sum_count = 1;
+                   marker_0_rvecs_sum_prime = rvecs[i];
+                   marker_0_tvecs_sum_prime = tvecs[i];
+                   marker_0_sum_count_prime = 1;
                  }
                  sendCameraTF(tvecs, rvecs, ids, true);
+                 has_Marker_0 = true;
              }
           }
-          sendMarkerTF(tvecs, rvecs, ids);
+          if(!has_Marker_0)
+            if(marker_0_sum_count_prime > 0)
+            {
+              ids.push_back(0);
+              rvecs.push_back(marker_0_rvecs_sum_prime / marker_0_sum_count_prime);
+              tvecs.push_back(marker_0_tvecs_sum_prime / marker_0_sum_count_prime);
+              sendCameraTF(tvecs, rvecs, ids, true);
+            }
+
+        sendMarkerTF(tvecs, rvecs, ids);
+      }
+
+      else if(marker_0_sum_count_prime > 0)
+      {
+          std::vector<cv::Vec3d> rvecs,tvecs;
+          ids.push_back(0);
+          rvecs.push_back(marker_0_rvecs_sum_prime / marker_0_sum_count_prime);
+          tvecs.push_back(marker_0_tvecs_sum_prime / marker_0_sum_count_prime);
+          sendCameraTF(tvecs, rvecs, ids, true);
       }
       //cv::aruco::drawDetectedMarkers(displyImg, rejected, noArray(), Scalar(100, 0, 255));
       //cv::resize(displyImg, displyImg, Size(960, 540));
@@ -848,33 +892,6 @@ void ImageProcessor::sub_imageCallback(const sensor_msgs::ImageConstPtr& msg)
       sub_color_mat = color_mat.clone();
       pthread_mutex_unlock(&mutex);
       Mat displyImg = color_mat.clone();
-      /**
-      vector<Point> joint_image_cords;
-      vector<Point3f> joint_3d_cords;
-      //namedWindow("Color Frame");
-      vector<Point> human_image_cords;
-      vector<Point3f> human_3d_cords;
-
-      if(!sub_color_mat.empty())
-      {
-        calculateRobotPose(joint_image_cords, joint_3d_cords, false);
-        if(!joint_image_cords.empty())
-        {
-          //Mat depth_debug;
-          //depth_debug = depth_mat.clone();
-          //if(!removeRobotImage(displyImg, joint_image_cords, joint_3d_cords, depth_debug))
-            //imshow("origin depth", depth_mat);
-          drawRobotJoints(displyImg,joint_image_cords);
-        }
-        calculateHumanPose(human_image_cords, human_3d_cords, false);
-        if(!human_image_cords.empty())
-          draw_human_pose(displyImg, human_image_cords);
-        //imshow("Color Frame", color_mat);
-        if(!left_key_points.empty())
-          drawKeyPoints(displyImg, right_key_points);
-      }
-      ***/
-
 
       cv::Ptr<cv::aruco::Dictionary> dictionary = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_50);
 
@@ -913,45 +930,116 @@ void ImageProcessor::sub_imageCallback(const sensor_msgs::ImageConstPtr& msg)
         //aruco::drawDetectedMarkers(displyImg, rejected, noArray(), Scalar(100, 0, 255));
         std::vector<cv::Vec3d> rvecs,tvecs;
         cv::aruco::estimatePoseSingleMarkers(corners,0.133f,cameraMatrix_sub,distortion_sub,rvecs,tvecs);
+        bool has_Marker_0 = false;
         for(int i = 0; i<ids.size(); i++)
           {
 
              //cv::aruco::drawAxis(displyImg,cameraMatrix_sub,distortion_sub, rvecs[i],tvecs[i],0.1);
              if (ids[i] == 0)
              {
-                 if(marker_0_sum_count == 0){
-                     marker_0_rvecs_sum = rvecs[i];
-                     marker_0_tvecs_sum = tvecs[i];
-                     marker_0_sum_count = 1;
+                 if(marker_0_sum_count_sub == 0){
+                     marker_0_rvecs_sum_sub = rvecs[i];
+                     marker_0_tvecs_sum_sub = tvecs[i];
+                     marker_0_sum_count_sub = 1;
                  }
-                 Vec3d t_diff = marker_0_tvecs_sum / marker_0_sum_count - tvecs[i];
-                 Vec3d r_diff = marker_0_rvecs_sum / marker_0_sum_count - rvecs[i];
+                 Vec3d t_diff = marker_0_tvecs_sum_sub / marker_0_sum_count_sub - tvecs[i];
+                 Vec3d r_diff = marker_0_rvecs_sum_sub / marker_0_sum_count_sub - rvecs[i];
                  if ((norm(t_diff) < 0.03 && norm(r_diff) < 0.1 )){
-                   if(marker_0_sum_count < 100){
-                     marker_0_rvecs_sum += rvecs[i];
-                     marker_0_tvecs_sum += tvecs[i];
-                     marker_0_sum_count ++;
+                   if(marker_0_sum_count_sub < 100){
+                     marker_0_rvecs_sum_sub += rvecs[i];
+                     marker_0_tvecs_sum_sub += tvecs[i];
+                     marker_0_sum_count_sub ++;
                    }
                    else{
-                   tvecs[i] = marker_0_tvecs_sum / marker_0_sum_count;
-                   rvecs[i] = marker_0_rvecs_sum / marker_0_sum_count;
+                   tvecs[i] = marker_0_tvecs_sum_sub / marker_0_sum_count_sub;
+                   rvecs[i] = marker_0_rvecs_sum_sub / marker_0_sum_count_sub;
                    }
                  }
                  else{
-                   marker_0_rvecs_sum = rvecs[i];
-                   marker_0_tvecs_sum = tvecs[i];
-                   marker_0_sum_count = 1;
+                   marker_0_rvecs_sum_sub = rvecs[i];
+                   marker_0_tvecs_sum_sub = tvecs[i];
+                   marker_0_sum_count_sub = 1;
                  }
-             sendCameraTF(tvecs, rvecs, ids, false);
-             }
 
+             sendCameraTF(tvecs, rvecs, ids, false);
+             has_Marker_0 = false;
+             }
           }
+          if(!has_Marker_0)
+            if(marker_0_sum_count_sub > 0)
+            {
+              ids.push_back(0);
+              rvecs.push_back(marker_0_rvecs_sum_sub / marker_0_sum_count_sub);
+              tvecs.push_back(marker_0_tvecs_sum_sub / marker_0_sum_count_sub);
+              sendCameraTF(tvecs, rvecs, ids, false);
+            }
+      }
+
+      else if(marker_0_sum_count_sub > 0)
+      {
+          std::vector<cv::Vec3d> rvecs,tvecs;
+          ids.push_back(0);
+          rvecs.push_back(marker_0_rvecs_sum_sub / marker_0_sum_count_sub);
+          tvecs.push_back(marker_0_tvecs_sum_sub / marker_0_sum_count_sub);
+          sendCameraTF(tvecs, rvecs, ids, false);
       }
       //cv::aruco::drawDetectedMarkers(displyImg, rejected, noArray(), Scalar(100, 0, 255));
       //cv::resize(displyImg, displyImg, Size(960, 540));
       //displyMat_sub = displyImg.clone();
       //cv::imshow("color_sub",displyImg);
       //cv::waitKey(30);
+    }
+    catch (cv_bridge::Exception& e)
+    {
+    	ROS_ERROR("Could not convert from '%s' to 'bgr8'.", msg->encoding.c_str());
+    }
+}
+void ImageProcessor::sub_imageCallback_simple(const sensor_msgs::ImageConstPtr& msg)
+{
+    try
+    {
+      //cv::imshow("view", cv_bridge::toCvShare(msg, "bgr8")->image);
+      Mat color_mat = cv_bridge::toCvShare(msg, "bgr8")->image;
+      pthread_mutex_lock(&mutex);
+      sub_color_mat = color_mat.clone();
+      pthread_mutex_unlock(&mutex);
+
+      std::vector<int> ids;
+      std::vector<cv::Vec3d> rvecs,tvecs;
+      if(marker_0_sum_count_sub > 0)
+      {
+              ids.push_back(0);
+              rvecs.push_back(marker_0_rvecs_sum_sub / marker_0_sum_count_sub);
+              tvecs.push_back(marker_0_tvecs_sum_sub / marker_0_sum_count_sub);
+              sendCameraTF(tvecs, rvecs, ids, false);
+      }
+    }
+    catch (cv_bridge::Exception& e)
+    {
+    	ROS_ERROR("Could not convert from '%s' to 'bgr8'.", msg->encoding.c_str());
+    }
+}
+
+
+void ImageProcessor::prime_imageCallback_simple(const sensor_msgs::ImageConstPtr& msg)
+{
+    try
+    {
+      //cv::imshow("view", cv_bridge::toCvShare(msg, "bgr8")->image);
+      Mat color_mat = cv_bridge::toCvShare(msg, "bgr8")->image;
+      pthread_mutex_lock(&mutex);
+      prime_color_mat = color_mat.clone();
+      pthread_mutex_unlock(&mutex);
+
+      std::vector<int> ids;
+      std::vector<cv::Vec3d> rvecs,tvecs;
+      if(marker_0_sum_count_prime > 0)
+      {
+              ids.push_back(0);
+              rvecs.push_back(marker_0_rvecs_sum_prime / marker_0_sum_count_prime);
+              tvecs.push_back(marker_0_tvecs_sum_prime / marker_0_sum_count_prime);
+              sendCameraTF(tvecs, rvecs, ids, true);
+      }
     }
     catch (cv_bridge::Exception& e)
     {
@@ -1007,7 +1095,7 @@ void ImageProcessor::sendMarkerTF(vector<Vec3d>& marker_trans, vector<Vec3d>& ma
         tf::Transform transform(tf_rot, tf_trans);
         ostringstream oss;
         oss << "marker_" << ids[i];
-        marker_position_broadcaster.sendTransform(tf::StampedTransform(transform, ros::Time::now(), "camera_base", oss.str()));
+        marker_position_broadcaster.sendTransform(tf::StampedTransform(transform, ros::Time::now(), "prime_camera_base", oss.str()));
       }
     }
 }
@@ -1095,7 +1183,7 @@ void ImageProcessor::loadRobotPoseFile(string filename)
 void ImageProcessor::linkToRobotTf()
 {
     static tf::TransformBroadcaster robot_pose_broadcaster;
-    robot_pose_broadcaster.sendTransform(tf::StampedTransform(robot_pose_tansform, ros::Time::now(), "marker_0", "base_link"));
+    robot_pose_broadcaster.sendTransform(tf::StampedTransform(robot_pose_tansform, ros::Time::now(), "marker_0", "ur_base"));
 }
 
 bool ImageProcessor::removeRobotImage(Mat& image,vector<Point>& robot_image_pos,
@@ -1342,7 +1430,7 @@ int main(int argc, char** argv)
   //cv::namedWindow("color_prime");
 
   ImageProcessor img_processor(rect, isCalibrationMode);
-  img_processor.initCalibration();
+  img_processor.initCalibration(1.0);
 //  ros::AsyncSpinner spinner(3);
   //use 2 threads
   ros::Rate rate(30);
@@ -1351,10 +1439,23 @@ int main(int argc, char** argv)
   }
   if(sendSplicedImage)
   img_processor.startSplicedThread();
+  //ros::MultiThreadedSpinner spinner(2);
+  //spinner.spin();
+  //ros::waitForShutdown();
+  //spinner.stop();
+  int time_counter = 0;
+  while(ros::ok() && time_counter < 300)
+  {
+    ros::spinOnce();
+    time_counter ++;
+    rate.sleep();
+
+  }
+
+  img_processor.SwitchTopic();
   ros::MultiThreadedSpinner spinner(2);
   spinner.spin();
   ros::waitForShutdown();
-  //spinner.stop();
 
 /**
 //  spinner.start();

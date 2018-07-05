@@ -183,6 +183,8 @@ class ImageProcessor
 
     void human_keypoints_callback(inertial_poser::ROI_Package roi_pack);
     void drawKeyPoints(Mat& image, vector<KeyPoints>& points);
+
+    void drawGoalPoint(Mat& image, bool prime);
   private:
     ros::NodeHandle nh;
     image_transport::ImageTransport it;
@@ -268,6 +270,50 @@ void ImageProcessor::initCalibration(){
     loadCalibrationFiles(calib_path_prime, cameraMatrix_prime, distortion_prime, 0.5);
     loadCalibrationFiles(calib_path_sub, cameraMatrix_sub, distortion_sub, 0.5);
 }
+
+void ImageProcessor::drawGoalPoint(Mat& image, bool prime)
+{
+  string reference_frame = "camera_base";
+  if(prime)
+  {
+    reference_frame = "prime_" + reference_frame;
+  }
+  tf::StampedTransform desired_transform;
+  tf::StampedTransform rect_transform;
+
+  try
+  {
+      robot_pose_listener.lookupTransform(reference_frame.c_str(), "desired_goal", ros::Time(0), desired_transform);
+      robot_pose_listener.lookupTransform(reference_frame.c_str(), "rect_goal", ros::Time(0), rect_transform);
+      Point3f desired_point3d(desired_transform.getOrigin().x(),
+                              desired_transform.getOrigin().y(),
+                              desired_transform.getOrigin().z());
+
+      Point3f rect_point3d(rect_transform.getOrigin().x(),
+                           rect_transform.getOrigin().y(),
+                           rect_transform.getOrigin().z());
+      Point desired_point2d, rect_point2d;
+      if(prime){
+        getImageCoordinate(desired_point3d, desired_point2d, cameraMatrix_prime);
+        getImageCoordinate(rect_point3d, rect_point2d, cameraMatrix_prime);
+      }
+      else{
+        getImageCoordinate(desired_point3d, desired_point2d, cameraMatrix_sub);
+        getImageCoordinate(rect_point3d, rect_point2d, cameraMatrix_sub);
+      }
+      circle(image, cv::Point((int)desired_point2d.x, (int)desired_point2d.y), 3, Scalar(255, 0, 255), -1, 8);
+      circle(image, cv::Point((int)rect_point2d.x, (int)rect_point2d.y), 3, Scalar(0, 255, 255), -1, 8);
+
+      //putText(image, prob_str.c_str(), cv::Point((int)points[i].x - 30, (int)points[i].y - 10), FONT_HERSHEY_SIMPLEX, 0.4, Scalar(255, 255, 0));
+  }
+  catch(tf::TransformException ex)
+  {
+      //ROS_ERROR("%s", ex.what());
+      return;
+  }
+
+}
+
 
 void ImageProcessor::drawKeyPoints(Mat& image, vector<KeyPoints>& points)
 {
@@ -615,6 +661,8 @@ void ImageProcessor::prime_imageCallback(const sensor_msgs::ImageConstPtr& msg)
         //imshow("Color Frame", color_mat);
         if(!keypoints_prime.empty())
           drawKeyPoints(displyImg, keypoints_prime);
+
+        drawGoalPoint(displyImg, true);
       }
 
 
@@ -743,6 +791,7 @@ void ImageProcessor::sub_imageCallback(const sensor_msgs::ImageConstPtr& msg)
         //imshow("Color Frame", color_mat);
         if(!keypoints_sub.empty())
           drawKeyPoints(displyImg, keypoints_sub);
+        drawGoalPoint(displyImg, false);
       }
 
 
