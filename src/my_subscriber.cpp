@@ -90,7 +90,7 @@ class ImageProcessor
       string color_topic = "/" + sensor + "/hd/image_color_rect";
       string depth_topic = "/" + sensor + "/hd/image_depth_rect";
       sub = it.subscribe(color_topic.c_str(), 1,&ImageProcessor::imageCallback,this);
-      sub2 = it.subscribe(depth_topic.c_str(),1,&ImageProcessor::depthimageCallback,this);
+      //sub2 = it.subscribe(depth_topic.c_str(),1,&ImageProcessor::depthimageCallback,this);
 
       spliced_image_pub = it.advertise("spliced", 1);
 
@@ -529,7 +529,7 @@ void ImageProcessor::calculateRobotPose(vector<Point>& joint_image_cords, vector
     tf::StampedTransform cam_base_transform;
     try
     {
-        robot_pose_listener.lookupTransform(robot_reference_frame.c_str(), "base_link", ros::Time(0), cam_base_transform);
+        robot_pose_listener.lookupTransform(robot_reference_frame.c_str(), "ur_base", ros::Time(0), cam_base_transform);
     }
 
     catch(tf::TransformException ex)
@@ -661,7 +661,7 @@ void ImageProcessor::depthimageCallback(const sensor_msgs::ImageConstPtr& msgdep
 void ImageProcessor::imageCallback(const sensor_msgs::ImageConstPtr& msg)
 {
     bool drawRobot;
-    nh.param("drawRobot", drawRobot, false);
+    nh.param("calibrationMode", calibrationMode, false);
     try
     {
       //cv::imshow("view", cv_bridge::toCvShare(msg, "bgr8")->image);
@@ -675,7 +675,7 @@ void ImageProcessor::imageCallback(const sensor_msgs::ImageConstPtr& msg)
       vector<Point> human_image_cords;
       vector<Point3f> human_3d_cords;
 
-      if(!color_mat.empty() && !depth_mat.empty())
+      if(!color_mat.empty())
       {
         calculateRobotPose(joint_image_cords, joint_3d_cords);
         if(!joint_image_cords.empty())
@@ -684,7 +684,6 @@ void ImageProcessor::imageCallback(const sensor_msgs::ImageConstPtr& msg)
           //depth_debug = depth_mat.clone();
           //if(!removeRobotImage(displyImg, joint_image_cords, joint_3d_cords, depth_debug))
             //imshow("origin depth", depth_mat);
-          if(drawRobot)
             drawRobotJoints(displyImg,joint_image_cords);
         }
         calculateHumanPose(human_image_cords, human_3d_cords);
@@ -702,8 +701,8 @@ void ImageProcessor::imageCallback(const sensor_msgs::ImageConstPtr& msg)
       Ptr<cv::aruco::DetectorParameters> detectorParams = cv::aruco::DetectorParameters::create();
       //detectorParams->cornerRefinementMethod = aruco::CORNER_REFINE_SUBPIX;
       detectorParams->cornerRefinementMethod = aruco::CORNER_REFINE_CONTOUR;
-      detectorParams->errorCorrectionRate = 1.0;
-      detectorParams->minOtsuStdDev = 50;
+      //detectorParams->errorCorrectionRate = 1.0;
+      //detectorParams->minOtsuStdDev = 50;
 
       //cv::Mat displyImg = color_mat.clone();
       //flip(displyImg,displyImg,1);
@@ -713,7 +712,9 @@ void ImageProcessor::imageCallback(const sensor_msgs::ImageConstPtr& msg)
       //std::vector<cv::Point3f> world_cord;
       //  vector< Vec3d > rvecs, tvecs;
       // detect markers and estimate pose
+
       cv::aruco::detectMarkers(color_mat, dictionary, corners, ids, detectorParams);
+	/****
       for(int j = 0; j < ids.size(); j++)
       {
         if(ids[j] == 5)
@@ -727,14 +728,15 @@ void ImageProcessor::imageCallback(const sensor_msgs::ImageConstPtr& msg)
           averagecorners /= 4.0;
         }
       }
-
+	***/
       //printf("%d\n",ids.size());
       if (ids.size() > 0)
       {
         cv::aruco::drawDetectedMarkers(displyImg, corners, ids);
         //aruco::drawDetectedMarkers(displyImg, rejected, noArray(), Scalar(100, 0, 255));
         std::vector<cv::Vec3d> rvecs,tvecs;
-        cv::aruco::estimatePoseSingleMarkers(corners,0.133f,cameraMatrix_color_clipped,distortion_color,rvecs,tvecs);
+        //cv::aruco::estimatePoseSingleMarkers(corners,0.133f,cameraMatrix_color_clipped,distortion_color,rvecs,tvecs);
+        cv::aruco::estimatePoseSingleMarkers(corners,0.1145f,cameraMatrix_color_clipped,distortion_color,rvecs,tvecs);
         for(int i = 0; i<ids.size(); i++)
           {
 
@@ -815,7 +817,7 @@ void ImageProcessor::sendMarkerTF(vector<Vec3d>& marker_trans, vector<Vec3d>& ma
     static tf::TransformBroadcaster marker_position_broadcaster;
     for(int i = 0; i < ids.size(); i++)
     {
-      if(ids[i] == 10)
+      if(ids[i] == 5)
       {
 
         cv::Rodrigues(marker_rot[i], rot);
